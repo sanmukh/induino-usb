@@ -34,7 +34,6 @@ struct induino_usb{
 	int bulk_out_size;
 };
 
-
 static void induino_bulk_complete(struct urb* urb){
 
 	
@@ -45,14 +44,59 @@ static void induino_bulk_complete(struct urb* urb){
 	else{
 		printk("Error in transmitting data. Error code: %d",urb->status);
 	}
+	usb_free_urb(urb);
 }
 
-//The read function
-static ssize_t induino_read(struct file* file,char __user *user_buf,size_t count, loff_t* ppos){
-		printk("Reading of device file unsupported\n");
-		return -1;
+
+
+static ssize_t induino_read(struct file* file,char __user *user_buf, size_t count, loff_t* ppos){
+
+	ssize_t retval = -1;
+	int subminor;
+	struct usb_interface* interface;
+	struct induino_usb* dev;
+	char* buf;
+
+	if(!user_buf){
+		printk("User buffer not allocated\n");
+		retval = -1;
+		goto error;
+	}
+	
+	subminor = MINOR(file->f_dentry->d_inode->i_rdev);
+
+	interface = usb_find_interface(&induino_driver,subminor);
+
+	if(!interface){
+		printk("Could not find the device interface \n");
+		retval = -1;
+		goto error;
 	}
 
+	dev = usb_get_intfdata(interface);
+
+	buf = kmalloc(dev->bulk_out_size,GFP_KERNEL);
+	memset(buf,0,dev->bulk_out_size);
+
+	if(!buf){
+		retval = -ENOMEM;
+		goto error;
+	}
+
+	retval = (ssize_t)usb_bulk_msg(dev->udev,usb_rcvbulkpipe(dev->udev,dev->bulk_in_endpoint->bEndpointAddress),buf,min(dev->bulk_in_size,count),&count,HZ*10);
+
+	if(!retval){
+		printk("Data is: %s, data length is: %d\n",buf,count);
+		if(copy_to_user(user_buf,buf+2,count)){
+			retval = -EFAULT;
+		}
+		else
+			retval = count;
+	}
+
+error:
+	return retval;
+}
 //The write function
 static ssize_t induino_write(struct file* file,const char __user *user_buf, size_t count, loff_t* ppos){
 	ssize_t retval=-1;
@@ -109,9 +153,8 @@ static ssize_t induino_write(struct file* file,const char __user *user_buf, size
 		
 	}
 	
-	return retval;
 error:
-	return -1;
+	return retval;
 }
 
 //The open function.
@@ -201,14 +244,16 @@ static int induino_probe(struct usb_interface *interface, const struct usb_devic
 	}
 
 	
-	dev->bulk_in_size = le16_to_cpu(dev->bulk_in_endpoint->wMaxPacketSize);
-	dev->bulk_out_size = le16_to_cpu(dev->bulk_out_endpoint->wMaxPacketSize);
 
+	dev->bulk_in_size = dev->bulk_in_endpoint->wMaxPacketSize;
+	dev->bulk_out_size = dev->bulk_out_endpoint->wMaxPacketSize;
 	if(dev->bulk_in_size == 0 || dev->bulk_out_size == 0 ){
 		printk("Invalid max packet size for the endpoints\n");
 		goto error;
 	}	
 	
+	printk("The max packet size for input endpoint is: %d\n",dev->bulk_in_size);
+	printk("The max packet size for output endpoint is: %d\n",dev->bulk_out_size);
 	//register the driver
 	retval = usb_register_dev(interface,&induino_class);
 	
